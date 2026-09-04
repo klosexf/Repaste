@@ -36,7 +36,7 @@ extension HoverSensitivity {
 // MARK: - 刘海悬停状态机
 
 /// 刘海悬停状态机（单例）：
-/// - 热区：每个有刘海的屏一个（刘海宽度 + 左右各 40pt、顶部下探覆盖整个刘海高度）；无刘海屏走胶囊兜底（CapsuleController）
+/// - 热区：每个有刘海的屏一个（与刘海矩形严格一致，不外扩不下探）；无刘海屏走胶囊兜底（CapsuleController）
 /// - 鼠标位置：global + local mouseMoved 事件驱动为主（globalMonitor 拿不到自己 App 的事件，local 配套覆盖面板自身），
 ///   待定复核与展开期收起检测由延时回调 / 60Hz 定时器读 NSEvent.mouseLocation（鼠标静止时兜底）
 /// - 抑制检测：鼠标按下用 global/local monitor 按下与抬起配对计数（另用 pressedMouseButtons 兜底校正防卡死）；
@@ -48,13 +48,6 @@ final class HotZoneWatcher: NSObject {
 
     // MARK: 状态机参数
 
-    /// 热区左右外扩（pt）
-    private static let hotZoneSideMargin: CGFloat = 40
-    /// 热区顶部下探深度（pt）。需覆盖「把鼠标滑进刘海并停稳」时光标的自然落点/抖动区间：
-    /// 实测光标扫过顶部时会在约 898–982 之间快速上下（扫过热区但不停留），且停在刘海下方约 40pt。
-    /// 40/64pt 时下边界都够不到实际落点，导致快丢不触发。取 96 使下边界到 y≈886，
-    /// 覆盖实测的 898–982 活动区间并留余量；仍不深入内容区，配合左右上角抑制避免误触。
-    private static let hotZoneDepth: CGFloat = 96
     /// 屏幕左右上角抑制范围（pt；Apple 菜单与控制中心领地，永不触发）
     private static let cornerSuppressSpan: CGFloat = 120
     /// 「鼠标在面板上」判定容差（pt，面板 frame 四周外扩）
@@ -430,7 +423,8 @@ final class HotZoneWatcher: NSObject {
         }
     }
 
-    /// 计算某屏的刘海热区：刘海宽度 + 左右各 40pt、顶部下探覆盖整个刘海高度。
+    /// 计算某屏的刘海热区：与刘海矩形严格一致（宽度 = 刘海宽，高度 = 刘海高，即
+    /// safeAreaInsets.top，不外扩不下探）。鼠标不在刘海内就不触发。
     /// 刘海判定：safeAreaInsets.top > 0；刘海左右沿由 auxiliaryTopLeftArea.maxX 与
     /// auxiliaryTopRightArea.minX 推算。无刘海屏返回 nil。
     private func notchHotZone(for screen: NSScreen) -> CGRect? {
@@ -442,13 +436,14 @@ final class HotZoneWatcher: NSObject {
         let notchMinX = left.maxX
         let notchMaxX = right.minX
         guard notchMaxX > notchMinX else { return nil }
+        let notchHeight = screen.safeAreaInsets.top
         return CGRect(
-            x: notchMinX - Self.hotZoneSideMargin,
-            y: screen.frame.maxY - Self.hotZoneDepth,
+            x: notchMinX,
+            y: screen.frame.maxY - notchHeight,
             // 高度 +1：CGRect.contains 为半开区间 [min, max)，光标恰在屏幕最上沿（y==frame.maxY）
             // 时会被判为带外；+1 使上沿点含入，避免「贴顶不触发」。
-            width: (notchMaxX - notchMinX) + Self.hotZoneSideMargin * 2,
-            height: Self.hotZoneDepth + 1
+            width: notchMaxX - notchMinX,
+            height: notchHeight + 1
         )
     }
 

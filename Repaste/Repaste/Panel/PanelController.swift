@@ -207,12 +207,16 @@ final class PanelController {
 
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
-        // 入场起始 frame：notch 移到屏幕顶上方（完全藏于刘海后方）；centered 下移 12pt
+        // 入场起始 frame：notch 移到屏幕顶上方（完全藏于刘海后方）；centered 下移 12pt。
+        // notch 的滑入起点在目标屏顶边上方，多屏纵向错位排列时该区域可能落在另一屏可见区，
+        // 会在另一屏「闪一下」——此时退化为原地淡入（不位移）
         var startFrame = finalFrame
         if !reduceMotion {
             switch mode {
             case .notch:
-                startFrame.origin.y = screen.frame.maxY + PanelMotion.notchGap
+                if !notchSlideOverlapsOtherScreen(screen: screen, panelHeight: finalFrame.height) {
+                    startFrame.origin.y = screen.frame.maxY + PanelMotion.notchGap
+                }
             case .centered:
                 startFrame.origin.y -= PanelMotion.centeredOffset
             }
@@ -251,21 +255,26 @@ final class PanelController {
 
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
-        // 退场目标 frame：notch 上滑至屏幕顶上方（完全藏于刘海后方）；centered 下沉 12pt
+        // 退场目标 frame：notch 上滑至屏幕顶上方（完全藏于刘海后方）；centered 下沉 12pt。
+        // notch 的滑出终点在目标屏顶边上方，多屏纵向错位排列时会在另一屏「闪一下」，
+        // 此时原地淡出（不位移）
         let endFrame: NSRect
         if reduceMotion {
             endFrame = panel.frame
         } else {
             switch currentMode {
             case .notch:
-                let top = (currentScreen ?? NSScreen.main ?? NSScreen.screens.first)?
-                    .frame.maxY ?? panel.frame.maxY
-                endFrame = CGRect(
-                    x: panel.frame.minX,
-                    y: top + PanelMotion.notchGap,
-                    width: panel.frame.width,
-                    height: panel.frame.height
-                )
+                if let screen = currentScreen ?? NSScreen.main ?? NSScreen.screens.first,
+                   !notchSlideOverlapsOtherScreen(screen: screen, panelHeight: panel.frame.height) {
+                    endFrame = CGRect(
+                        x: panel.frame.minX,
+                        y: screen.frame.maxY + PanelMotion.notchGap,
+                        width: panel.frame.width,
+                        height: panel.frame.height
+                    )
+                } else {
+                    endFrame = panel.frame
+                }
             case .centered:
                 endFrame = panel.frame.offsetBy(dx: 0, dy: -PanelMotion.centeredOffset)
             }
@@ -327,6 +336,22 @@ final class PanelController {
         }
 
         return NSRect(origin: origin, size: size)
+    }
+
+    /// notch 滑入 / 滑出带是否落入其他屏幕可见区（多屏纵向错位排列时会在另一屏「闪一下」）。
+    /// 滑出带 = 目标屏顶边上方、面板水平居中、高度覆盖「藏入刘海后方 notchGap + 面板高」的矩形；
+    /// 任一其他屏 frame 与该带相交，说明面板顶边上方区域在那块屏上可见，滑动会被看见
+    private func notchSlideOverlapsOtherScreen(screen: NSScreen, panelHeight: CGFloat) -> Bool {
+        let band = CGRect(
+            x: screen.frame.midX - DT.panelWidth / 2,
+            y: screen.frame.maxY,
+            width: DT.panelWidth,
+            height: PanelMotion.notchGap + panelHeight
+        )
+        for other in NSScreen.screens where other !== screen {
+            if other.frame.intersects(band) { return true }
+        }
+        return false
     }
 
     /// 按内容自适应高度重算并应用面板 frame
