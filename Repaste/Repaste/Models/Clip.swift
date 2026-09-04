@@ -43,6 +43,9 @@ final class Clip {
     /// 录制时间
     var createdAt: Date
 
+    /// 最近一次在主面板被点击使用的时间（nil = 从未使用；「最近操作优先」排序依据）
+    var lastUsedAt: Date?
+
     /// 置顶：不参与淘汰
     var pinned: Bool
 
@@ -83,6 +86,7 @@ final class Clip {
         sourceIconPath: String? = nil,
         byteSize: Int = 0,
         createdAt: Date = Date(),
+        lastUsedAt: Date? = nil,
         pinned: Bool = false,
         groupId: UUID? = nil,
         pixelWidth: Int? = nil,
@@ -100,6 +104,7 @@ final class Clip {
         self.sourceIconPath = sourceIconPath
         self.byteSize = byteSize
         self.createdAt = createdAt
+        self.lastUsedAt = lastUsedAt
         self.pinned = pinned
         self.groupId = groupId
         self.pixelWidth = pixelWidth

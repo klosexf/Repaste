@@ -313,6 +313,26 @@ struct GeneralSettingsCards: View {
                 }
             }
 
+            // 排序：主面板历史列表的排序模式（单选，即时生效）
+            SettingsGroupCard(title: "排序", subtitle: "主面板历史列表的排列方式，改动即时生效") {
+                VStack(alignment: .leading, spacing: 14) {
+                    PasteTargetRow(
+                        title: "最近复制优先",
+                        subtitle: "仅按内容的原始复制时间排序，最近复制的排在最上面。",
+                        isSelected: settings.sortMode == "recent_copied"
+                    ) {
+                        settings.sortMode = "recent_copied"
+                    }
+                    PasteTargetRow(
+                        title: "最近操作优先",
+                        subtitle: "复制与点击使用都会刷新位置，最近一次操作的排在最上面。",
+                        isSelected: settings.sortMode == "recent_used"
+                    ) {
+                        settings.sortMode = "recent_used"
+                    }
+                }
+            }
+
             // 粘贴（含辅助功能授权引导与回落）
             PasteTargetCard()
 
@@ -432,7 +452,7 @@ struct PasteTargetCard: View {
     }
 }
 
-/// 粘贴目标单选行：圆形单选 + 标题 + 说明（可附未授权回退标注小字）
+/// 通用单选行（粘贴目标 / 排序模式共用）：圆形单选 + 标题 + 说明（可附未授权回退标注小字）
 struct PasteTargetRow: View {
     let title: String
     let subtitle: String

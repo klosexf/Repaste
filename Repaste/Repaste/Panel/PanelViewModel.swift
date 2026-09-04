@@ -305,8 +305,11 @@ final class PanelViewModel {
 
     /// 过滤排序后的列表：
     /// 非模板条目（groupId == nil）+ Tab 类型过滤 + 搜索（preview/payloadText 包含，大小写不敏感）
-    /// + 来源过滤（bundleId 相等或都是未知）；排序：pinned 置顶（同组内 createdAt 降序），其余 createdAt 降序；
-    /// 模板组 tab 按组内 sortIndex 升序（拖拽排序的持久化依据）
+    /// + 来源过滤（bundleId 相等或都是未知）；
+    /// 排序：模板组 tab 按组内 sortIndex 升序（拖拽排序的持久化依据）；
+    /// 其余 pinned 置顶（同组内时间降序）——
+    /// - 最近复制优先（recent_copied）：按 createdAt 降序
+    /// - 最近操作优先（recent_used）：按 max(createdAt, lastUsedAt) 降序（点击使用即置顶）
     var filteredClips: [Clip] {
         var result = tabAndSearchFiltered
 
@@ -320,10 +323,13 @@ final class PanelViewModel {
             }
         }
 
-        // 排序：模板组 tab 按 sortIndex 升序；其余 pinned 置顶、createdAt 降序
+        // 排序：模板组 tab 按 sortIndex 升序；其余 pinned 置顶 + 按排序模式时间降序
+        let groupTab = isGroupTab
+        let recentUsedFirst = settings.sortMode == "recent_used"
         return result.sorted { a, b in
-            if isGroupTab { return Self.templateOrder(a, b) }
+            if groupTab { return Self.templateOrder(a, b) }
             if a.pinned != b.pinned { return a.pinned }
+            if recentUsedFirst { return Self.activityDate(a) > Self.activityDate(b) }
             return a.createdAt > b.createdAt
         }
     }
@@ -413,6 +419,14 @@ final class PanelViewModel {
         }
     }
 
+    /// 条目最近一次活动时间（「最近操作优先」排序依据）：
+    /// max(createdAt, lastUsedAt)；从未被使用则回退复制时间
+    /// nonisolated：纯比较函数（只读模型快照字段），供 sorted(by:) 非隔离参数引用
+    nonisolated private static func activityDate(_ clip: Clip) -> Date {
+        if let used = clip.lastUsedAt, used > clip.createdAt { return used }
+        return clip.createdAt
+    }
+
     // MARK: 动作
 
     /// 使用条目（点击行 / ⏎ / 模板点击共用）：按 pasteTarget 走「写剪贴板」或「直接粘贴到目标 App」
@@ -423,6 +437,10 @@ final class PanelViewModel {
         let eventName = clip.isTemplate ? EventLog.templateUsed : EventLog.itemUsed
         EventLog.track(eventName, ["kind": clip.kind, "paste_target": pasteTarget])
 
+        // 记录使用时刻（「最近操作优先」模式下点击即置顶；带动画重排列表）
+        withAnimation(.snappy(duration: 0.3, extraBounce: 0.1)) {
+            store.markUsed(clip: clip)
+        }
         // 默认流：写剪贴板 → toast「已写入剪贴板」→ 面板保持展开
         guard pasteTarget == "app" else {
             PasteboardWriter.write(clip: clip)

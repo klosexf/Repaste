@@ -208,6 +208,12 @@ final class ClipboardStore {
         save()
     }
 
+    /// 记录条目最近一次在主面板被点击使用的时刻（「最近操作优先」排序依据）
+    func markUsed(clip: Clip) {
+        clip.lastUsedAt = Date()
+        save()
+    }
+
     /// 切换置顶（就地翻转 pinned 并持久化；列表排序由面板重排）
     func togglePin(clip: Clip) {
         clip.pinned.toggle()

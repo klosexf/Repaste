@@ -34,6 +34,8 @@ enum SettingsKey {
     static let defaultTab = "default_tab"
     /// 来源应用筛选开关
     static let enableAppFilter = "enable_app_filter"
+    /// 列表排序模式："recent_copied"（最近复制优先）/ "recent_used"（最近操作优先）
+    static let sortMode = "sort_mode"
     /// 记住上次来源筛选开关
     static let rememberAppFilter = "remember_app_filter"
     /// 首次引导完成标记
@@ -183,6 +185,15 @@ final class SettingsStore {
         }
     }
 
+    /// 列表排序模式（默认 "recent_copied" 最近复制优先；"recent_used" = 最近操作优先，
+    /// 复制与点击使用都会刷新排序位置）
+    var sortMode: String = "recent_copied" {
+        didSet {
+            guard oldValue != sortMode else { return }
+            defaults.set(sortMode, forKey: SettingsKey.sortMode)
+        }
+    }
+
     /// 首次引导完成标记（默认 false）
     var onboardingCompleted: Bool = false {
         didSet {
@@ -301,6 +312,7 @@ final class SettingsStore {
         readClipboardOnLaunch = defaults.bool(forKey: SettingsKey.readClipboardOnLaunch)
         defaultTab = defaults.string(forKey: SettingsKey.defaultTab) ?? "all"
         enableAppFilter = defaults.bool(forKey: SettingsKey.enableAppFilter)
+        sortMode = defaults.string(forKey: SettingsKey.sortMode) ?? "recent_copied"
         rememberAppFilter = defaults.bool(forKey: SettingsKey.rememberAppFilter)
         onboardingCompleted = defaults.bool(forKey: SettingsKey.onboardingCompleted)
         pasteTarget = defaults.string(forKey: SettingsKey.pasteTarget) ?? "clipboard"
