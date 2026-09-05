@@ -54,7 +54,7 @@
 
 ### 方式一：下载 DMG（普通用户）
 
-1. 下载 [`Repaste-V0.2.dmg`](https://github.com/klosexf/Repaste/releases/download/v0.2/Repaste-V0.2.dmg)（约 2 MB，从 GitHub Releases 下载）
+1. 下载 [`Repaste-V0.3.dmg`](https://github.com/klosexf/Repaste/releases/download/v0.3/Repaste-V0.3.dmg)（约 2 MB，从 GitHub Releases 下载）
 2. 双击挂载 DMG，把 **Repaste** 拖到「应用程序」文件夹
 3. 在「应用程序」中打开 Repaste
 
