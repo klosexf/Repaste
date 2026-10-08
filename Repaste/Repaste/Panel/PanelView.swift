@@ -87,10 +87,15 @@ struct PanelView: View {
                 pausedBanner
             }
             listArea
+            if viewModel.isMultiSelecting {
+                MultiCopyFooter(viewModel: viewModel)
+            }
         }
         .frame(width: DT.panelWidth)
         .coordinateSpace(name: Self.coordinateSpaceName)
         .panelShapeBackground(isNotch: viewModel.isNotchMode)
+        .allowsHitTesting(!viewModel.isBatchPreviewPresented)
+        .accessibilityHidden(viewModel.isBatchPreviewPresented)
         // ⋮ 更多菜单浮层（zIndex 低于图片预览与 toast；点菜单外任意处关闭）。
         // .id(overlayTeardownToken)：浮层归空 0.7s 后代次递增强制拆除浮层子树——
         // 移除 transition 偶发卡住时视图残留（不可见但吞点击），身份重建保证彻底移除
@@ -122,6 +127,16 @@ struct PanelView: View {
             dialogOverlay
                 .animation(dialogAnimation, value: viewModel.activeDialog == nil)
                 .id(viewModel.overlayTeardownToken)
+        }
+        .overlay {
+            if viewModel.isBatchPreviewPresented {
+                ZStack {
+                    Color.black.opacity(0.55)
+                        .contentShape(Rectangle())
+                        .onTapGesture { viewModel.closeBatchPreview() }
+                    MultiCopyPreview(viewModel: viewModel, availableHeight: panelHeight)
+                }
+            }
         }
         // toast 轻提示（面板顶部浮现，最上层）
         .overlay(alignment: .top) {
@@ -196,7 +211,13 @@ struct PanelView: View {
                     .font(.system(size: 13))
                     .foregroundStyle(DT.fg)
                     .focused($searchFocused)
-                    .onSubmit { model.useSelected() }
+                    .onSubmit {
+                        if model.isMultiSelecting && NSEvent.modifierFlags.contains(.command) {
+                            model.copySelectedBatch()
+                        } else {
+                            model.useSelected()
+                        }
+                    }
                 if !model.searchText.isEmpty {
                     clearSearchButton
                 }
@@ -273,32 +294,46 @@ struct PanelView: View {
 
     /// 横向标签页行（隐藏滚动条；当前 tab 用 PillChip 选中态白底黑字胶囊；间距 6）
     private var tabBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(tabItems) { item in
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(tabItems) { item in
+                        Button {
+                            viewModel.selectedTab = item.tab
+                        } label: {
+                            PillChip(title: item.title, isSelected: viewModel.selectedTab == item.tab)
+                        }
+                        .buttonStyle(.mattePress)
+                    }
+                    // 新建模板组入口仍与模板标签一起滚动。
                     Button {
-                        viewModel.selectedTab = item.tab
+                        viewModel.showNewGroupDialog()
                     } label: {
-                        PillChip(title: item.title, isSelected: viewModel.selectedTab == item.tab)
+                        Text("＋")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(DT.accent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
                     }
                     .buttonStyle(.mattePress)
+                    .help("新建模板组")
                 }
-                // 新建模板组入口（＋ 弹窗：只问名称，创建即新增 tab 并切换）
-                Button {
-                    viewModel.showNewGroupDialog()
-                } label: {
-                    Text("＋")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(DT.accent)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                }
-                .buttonStyle(.mattePress)
-                .help("新建模板组")
+                .padding(.leading, 14)
             }
-            .padding(.horizontal, 14)
+            .modifier(HorizontalWheelScroll(position: $tabScrollPos, state: $tabScrollState))
+            Button { viewModel.toggleMultiSelection() } label: {
+                Label(viewModel.isMultiSelecting ? "取消" : "多选",
+                      systemImage: viewModel.isMultiSelecting ? "xmark" : "checklist")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(viewModel.isMultiSelecting ? DT.accentBright : DT.fg)
+                    .padding(.horizontal, 9)
+                    .frame(height: 28)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(DT.button))
+            }
+            .buttonStyle(.mattePress)
+            .fixedSize()
+            .padding(.trailing, 14)
         }
-        .modifier(HorizontalWheelScroll(position: $tabScrollPos, state: $tabScrollState))
         .padding(.bottom, 9)
     }
 
@@ -489,13 +524,13 @@ struct PanelView: View {
     /// 模板组 tab 内容区：组管理行 + 模板列表（可拖拽排序）+ 底部操作区（固定，不在滚动区内）
     private var templateArea: some View {
         VStack(spacing: 0) {
-            groupManageRow
+            if !viewModel.isMultiSelecting { groupManageRow }
             if viewModel.filteredClips.isEmpty {
                 templateEmptyState
             } else {
                 templateList
             }
-            templateFooter
+            if !viewModel.isMultiSelecting { templateFooter }
         }
     }
 
@@ -524,10 +559,14 @@ struct PanelView: View {
                         TemplateRow(
                             clip: clip,
                             isSelected: viewModel.selectionIndex == index,
+                            isMultiSelecting: viewModel.isMultiSelecting,
+                            batchNumber: viewModel.batchSelection.position(of: clip.id),
+                            isBatchSelectable: viewModel.canBatchSelect(clip),
+                            batchUnavailableReason: viewModel.batchUnavailableReason(clip),
                             searchText: viewModel.searchText,
                             onUse: {
                                 viewModel.selectionIndex = index
-                                viewModel.use(clip: clip)
+                                viewModel.activateRow(clip)
                             },
                             onMore: { anchor in
                                 viewModel.openTemplateMenu(clip: clip, anchor: anchor)
@@ -536,6 +575,7 @@ struct PanelView: View {
                         .id(clip.id)
                         // 拖拽排序：拖起记录条目 id；悬停到目标行即时重排
                         .onDrag {
+                            guard !viewModel.isMultiSelecting else { return NSItemProvider() }
                             viewModel.draggingTemplateId = clip.id
                             return NSItemProvider(object: clip.id.uuidString as NSString)
                         }
@@ -605,10 +645,14 @@ struct PanelView: View {
                         ClipRow(
                             clip: clip,
                             isSelected: viewModel.selectionIndex == index,
+                            isMultiSelecting: viewModel.isMultiSelecting,
+                            batchNumber: viewModel.batchSelection.position(of: clip.id),
+                            isBatchSelectable: viewModel.canBatchSelect(clip),
+                            batchUnavailableReason: viewModel.batchUnavailableReason(clip),
                             searchText: viewModel.searchText,
                             onUse: {
                                 viewModel.selectionIndex = index
-                                viewModel.use(clip: clip)
+                                viewModel.activateRow(clip)
                             },
                             onOpenPreview: {
                                 viewModel.openPreview(clip: clip)
@@ -938,6 +982,17 @@ struct PanelView: View {
     /// 键盘事件处理：弹窗打开时 esc 取消（其余交给弹窗输入框）；
     /// ↑↓ 移动选中、⏎ 使用、⌘⏎ 打开链接、⌘G 存入模板组、⌫ 删除、esc 逐层关闭（预览 / 菜单 / 搜索 / 面板）
     private func handleKeyPress(_ press: KeyPress) -> KeyPress.Result {
+        if viewModel.isBatchPreviewPresented {
+            if press.key == .escape {
+                viewModel.closeBatchPreview()
+                return .handled
+            }
+            if press.key == .return && press.modifiers.contains(.command) {
+                viewModel.copySelectedBatch()
+                return .handled
+            }
+            return .ignored
+        }
         // 弹窗打开：esc = 取消；Enter 由弹窗内输入框 onSubmit 提交主操作，其余按键透传
         if viewModel.activeDialog != nil {
             if press.key == .escape {
@@ -962,6 +1017,10 @@ struct PanelView: View {
             return .handled
         case .return:
             if press.modifiers.contains(.command) {
+                if viewModel.isMultiSelecting {
+                    viewModel.copySelectedBatch()
+                    return .handled
+                }
                 // ⌘⏎ 打开链接：选中条目为链接类打开整串 URL；文本类打开首个 http(s) 链接；其他类型忽略
                 if let index = viewModel.selectionIndex, viewModel.filteredClips.indices.contains(index) {
                     viewModel.openLink(clip: viewModel.filteredClips[index], kind: "hotkey")
@@ -971,7 +1030,13 @@ struct PanelView: View {
             viewModel.useSelected()
             return .handled
         case .delete:
-            viewModel.deleteSelected()
+            if viewModel.isMultiSelecting {
+                if let index = viewModel.selectionIndex, viewModel.filteredClips.indices.contains(index) {
+                    viewModel.removeBatchItem(viewModel.filteredClips[index].id)
+                }
+            } else {
+                viewModel.deleteSelected()
+            }
             return .handled
         case .escape:
             // 逐层关闭：图片预览 → ⋮ 菜单 → 模板菜单 → 浏览器选择浮层 → 清空搜索 → 关闭面板
@@ -983,6 +1048,8 @@ struct PanelView: View {
                 viewModel.closeTemplateMenu()
             } else if viewModel.browserChooserClip != nil {
                 viewModel.closeBrowserChooser()
+            } else if viewModel.isMultiSelecting {
+                viewModel.cancelMultiSelection()
             } else if !viewModel.searchText.isEmpty {
                 viewModel.searchText = ""
             } else {

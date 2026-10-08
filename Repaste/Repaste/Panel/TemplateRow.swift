@@ -27,6 +27,10 @@ struct TemplateRow: View {
     let clip: Clip
     /// 是否键盘选中（surface3 高亮）
     let isSelected: Bool
+    var isMultiSelecting = false
+    var batchNumber: Int? = nil
+    var isBatchSelectable = true
+    var batchUnavailableReason = "不支持多选"
     /// 搜索关键词（命中片段高亮）
     let searchText: String
     /// 使用模板（点击整行）
@@ -41,6 +45,10 @@ struct TemplateRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
+            if isMultiSelecting {
+                BatchSelectionBadge(number: batchNumber, isEnabled: isBatchSelectable)
+                    .padding(.top, 3)
+            }
             // 内容两行截断（模板都是静态文本，无类型标签列；搜索命中段高亮）
             SearchHighlight.text(clip.preview, keyword: searchText)
                 .font(.system(size: 13))
@@ -48,7 +56,7 @@ struct TemplateRow: View {
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 3)
-            moreButton
+            if !isMultiSelecting { moreButton }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -56,8 +64,19 @@ struct TemplateRow: View {
             RoundedRectangle(cornerRadius: DT.innerCardRadius, style: .continuous)
                 .fill(rowBackground)
         )
+        .overlay {
+            RoundedRectangle(cornerRadius: DT.innerCardRadius, style: .continuous)
+                .strokeBorder(batchNumber != nil ? DT.accent.opacity(0.6) : .clear, lineWidth: 1)
+        }
+        .opacity(isMultiSelecting && !isBatchSelectable ? 0.4 : 1)
         .contentShape(RoundedRectangle(cornerRadius: DT.innerCardRadius, style: .continuous))
         .onTapGesture(perform: onUse)
+        .accessibilityElement(children: isMultiSelecting ? .ignore : .contain)
+        .accessibilityLabel(clip.preview)
+        .accessibilityValue(isMultiSelecting ? (batchNumber.map { "已选，第 \($0) 项" } ?? (isBatchSelectable ? "未选中" : batchUnavailableReason)) : "")
+        .help(isMultiSelecting && !isBatchSelectable ? batchUnavailableReason : "")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onUse() }
         .onHover { isHovering = $0 }
     }
 
@@ -65,6 +84,7 @@ struct TemplateRow: View {
 
     /// 选中 = surface3；hover = surface2；否则透明
     private var rowBackground: Color {
+        if batchNumber != nil { return DT.accent.opacity(0.12) }
         if isSelected { return DT.surface3 }
         if isHovering { return DT.surface2 }
         return .clear
@@ -193,14 +213,16 @@ struct TemplateDropDelegate: DropDelegate {
     let viewModel: PanelViewModel
 
     func dropEntered(info: DropInfo) {
+        guard !viewModel.isMultiSelecting else { return }
         viewModel.dragTemplateEntered(target: target)
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
+        DropProposal(operation: viewModel.isMultiSelecting ? .cancel : .move)
     }
 
     func performDrop(info: DropInfo) -> Bool {
+        guard !viewModel.isMultiSelecting else { return false }
         viewModel.dragTemplateEnded()
         return true
     }

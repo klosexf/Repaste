@@ -19,6 +19,7 @@ final class ImageStore {
 
     /// 根目录
     private let root: URL
+    var copiedImagesRoot: URL { root.deletingLastPathComponent().appendingPathComponent("copied-images", isDirectory: true) }
 
     /// 缩略图最大边长（等比缩放，小图不放大）
     private static let thumbMaxDimension: CGFloat = 40
@@ -106,6 +107,7 @@ final class ImageStore {
             try? FileManager.default.removeItem(at: url)
         }
         Self.cache.removeAllObjects()
+        try? FileManager.default.removeItem(at: copiedImagesRoot)
     }
 
     // MARK: TTL 清理
@@ -113,6 +115,9 @@ final class ImageStore {
     /// 删除 mtime 超过 TTL 的原图（缩略图保留，用于降级显示）
     /// - Parameter ttlDays: 保留天数
     func purgeExpired(ttlDays: Int) {
+        let activeCopies = NSPasteboard.general.readObjects(forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        ImageBatchPasteboard.purgeExpiredCache(at: copiedImagesRoot, keeping: activeCopies, ttlDays: ttlDays)
         let files = (try? FileManager.default.contentsOfDirectory(
             at: root,
             includingPropertiesForKeys: [.contentModificationDateKey]

@@ -4,6 +4,7 @@
 # Xcode
 build/
 DerivedData/
+.build/
 xcuserdata/
 *.xcuserstate
 
@@ -18,6 +19,9 @@ notch-ready-animation-proposals.html
 landing.html
 notch-variants.html
 rednote-cover/
+docs/
+prototypes/
+index.html
 
 # 打包产物（已发布到 GitHub Release，不入库）
 *.dmg

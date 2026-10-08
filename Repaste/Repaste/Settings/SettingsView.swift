@@ -173,7 +173,7 @@ struct SettingsView: View {
         case .clearImages:
             PanelDialogCard(
                 title: "清空图片",
-                subtitle: "将删除全部图片条目与原图文件（模板内图片一并删除），无法恢复。",
+                subtitle: "将删除全部图片条目、原图与复制缓存（模板内图片一并删除）。已复制的图片批次将失效，无法恢复。",
                 cancelTitle: "取消",
                 confirmTitle: "清空",
                 confirmColor: DT.danger,

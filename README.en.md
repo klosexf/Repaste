@@ -21,6 +21,8 @@
 - **Two summon entrances** — hover the notch for 0.1s to open the dropdown panel, or press `⌥⇧V` to summon it centered on screen; both entrances share the same list for a consistent experience
 - **Source app at a glance** — every entry shows its source app (icon + name); filter by source, combinable with search and type tabs
 - **Clipboard history** — text / image / link / file cards with a 200-entry rolling cap (pinned and template items excluded); search as you type
+- **Multi-copy** — use Select on the right of the tabs to combine text, links and text templates in selection order. Search and filters retain selections; preview, reorder, remove and choose newline / blank line / space before copying once and pasting everything with one `⌘V`.
+- **Multiple image copy (test build)** — select image records, reorder them in the thumbnail preview and copy independent original image files together. Text and images use separate batches. The user has tested multiple-image paste in WeChat successfully. Feishu receiver compatibility still needs testing; receivers may show images or file attachments.
 - **Custom template groups** — each group is a tab at the top of the panel; create as many as you like; `⌘G` turns any history entry into a template, exempt from eviction
 - **One-click link opening** — domain highlighted in bold (anti-phishing); click "Open" to jump straight to the browser; hold `⌥` to temporarily choose which browser to use
 - **⋮ More menu** — actions matched to content type: "Copy without formatting" for text, "View large" for images, plus save-to-template / pin / delete
@@ -109,6 +111,10 @@ xcodebuild -project Repaste/Repaste.xcodeproj -scheme Repaste build
 | `⌫` | Delete entry |
 | `esc` | Close panel |
 
+In multi-selection mode, Command-click on text, links or an image with its original still available enters selection. Return toggles the focused record, Command-Return copies the batch, and Delete only removes the focused selection. Escape closes the preview first, then exits selection. The first selection determines a text or image batch; clearing all selections allows switching types. Images whose originals have expired cannot be batch copied. Files remain available for individual use.
+
+Image batches use a local copy cache so deleting history does not break the active clipboard. Old batches follow the image retention setting, while files still referenced by the clipboard are retained. Clear Images also removes this cache and invalidates the current image batch.
+
 ## Privacy
 
 - **Fully local storage** — no account, no upload, no sync; history and images never leave your Mac
@@ -156,7 +162,7 @@ Repaste/
 
 - [ ] iCloud / multi-device sync
 - [ ] Template variables & placeholders (`{{date}}`, `{{clipboard}}`)
-- [ ] Right-click context menus & batch actions
+- [ ] Right-click context menus & batch management (delete / pin)
 - [ ] Link preview cards (title & thumbnail)
 - [ ] Image OCR, drag-out of the panel
 - [ ] Sparkle auto-update

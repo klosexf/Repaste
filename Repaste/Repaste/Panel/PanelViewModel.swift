@@ -112,6 +112,12 @@ final class PanelViewModel {
     /// 键盘选中行下标（filteredClips 下标；nil = 无选中）
     var selectionIndex: Int?
 
+    // Batch selection is independent of keyboard focus and the currently filtered rows.
+    private(set) var isMultiSelecting = false
+    private(set) var batchSelection = MultiCopySelection()
+    var copySeparator: BatchCopySeparator = .newline
+    private(set) var isBatchPreviewPresented = false
+
     /// 展示模式（notch 顶部圆角为 0；由 PanelController.show 写入）
     var isNotchMode = true
 
@@ -228,10 +234,12 @@ final class PanelViewModel {
         let fetched = store.fetchAllClips()
         clips = pendingDeletes.isEmpty ? fetched : fetched.filter { pendingDeletes[$0.id] == nil }
         groups = store.fetchAllGroups()
+        batchSelection.reconcile(with: Set(clips.map(\.id)))
     }
 
     /// 面板打开时恢复设置：tab 取 defaultTab、来源筛选按 rememberAppFilter 恢复、重置搜索与键盘选中
     func prepareForDisplay() {
+        cancelMultiSelection()
         // 提交全部待删除条目（面板重开后不再保留撤销窗口）
         commitAllPendingDeletes()
         reload()
@@ -255,6 +263,7 @@ final class PanelViewModel {
     /// 面板关闭时持久化：rememberAppFilter 开启时保存当前来源筛选；待删除条目一并提交
     /// （toast 随面板消失、撤销入口不复存在）
     func persistOnHide() {
+        cancelMultiSelection()
         commitAllPendingDeletes()
         if settings.rememberAppFilter {
             settings.lastSourceFilter = selectedSourceFilter
@@ -405,6 +414,7 @@ final class PanelViewModel {
             &+ (showsSourceBar ? 1 : 0)
             &+ (showsPausedBanner ? 2 : 0)
             &+ (isGroupTab ? 4 : 0)
+            &+ (isMultiSelecting ? 8 : 0)
             &+ groups.count
     }
 
@@ -429,10 +439,162 @@ final class PanelViewModel {
 
     // MARK: 动作
 
+    // MARK: 多选复制
+
+    func canBatchSelect(_ clip: Clip) -> Bool {
+        if batchSelection.ids.contains(clip.id) { return true }
+        guard let kind = batchKind(for: clip) else { return false }
+        return batchSelection.kind == nil || batchSelection.kind == kind
+    }
+
+    private func batchKind(for clip: Clip) -> BatchCopyKind? {
+        if MultiCopySelection.textForSelection(kind: clip.kind, text: clip.payloadText) != nil { return .text }
+        if clip.kindEnum == .image, let ref = clip.payloadRef, ImageStore.shared.hasOriginal(name: ref) { return .image }
+        return nil
+    }
+
+    func batchUnavailableReason(_ clip: Clip) -> String {
+        if clip.kindEnum == .image && batchKind(for: clip) == nil { return "原图已清理" }
+        if batchSelection.kind != nil && batchKind(for: clip) != nil { return "图片和文字请分别选择" }
+        return "不支持多选"
+    }
+
+    var isImageBatch: Bool { batchSelection.kind == .image }
+    func batchKindDescription(_ clip: Clip) -> String {
+        guard batchKind(for: clip) == .image else { return "原图已清理" }
+        let size = [clip.pixelWidth, clip.pixelHeight].compactMap { $0 }.map(String.init).joined(separator: " × ")
+        return [size, clip.format ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+    var batchCopyTitle: String {
+        isImageBatch ? "复制 \(batchSelection.ids.count) 张图片" : "复制 \(batchSelection.ids.count) 项"
+    }
+    var canCopyBatch: Bool {
+        guard !batchSelection.ids.isEmpty, batchClips.count == batchSelection.ids.count else { return false }
+        return isImageBatch ? batchClips.allSatisfy { batchKind(for: $0) == .image } : mergedBatchText != nil
+    }
+
+    var batchClips: [Clip] {
+        let byID = Dictionary(uniqueKeysWithValues: clips.map { ($0.id, $0) })
+        return batchSelection.ids.compactMap { byID[$0] }
+    }
+
+    var mergedBatchText: String? {
+        let contents = Dictionary(uniqueKeysWithValues: batchClips.compactMap { clip in
+            MultiCopySelection.textForSelection(kind: clip.kind, text: clip.payloadText)
+                .map { (clip.id, $0) }
+        })
+        return batchSelection.mergedText(from: contents, separator: copySeparator)
+    }
+
+    var hiddenBatchSelectionCount: Int {
+        let visibleIDs = Set(filteredClips.map(\.id))
+        return batchSelection.ids.filter { !visibleIDs.contains($0) }.count
+    }
+
+    func toggleMultiSelection() {
+        if isMultiSelecting { cancelMultiSelection() } else { beginMultiSelection() }
+    }
+
+    private func beginMultiSelection() {
+        moreMenuClip = nil
+        templateMenuClip = nil
+        browserChooserClip = nil
+        previewingClip = nil
+        draggingTemplateId = nil
+        isMultiSelecting = true
+    }
+
+    func cancelMultiSelection() {
+        isBatchPreviewPresented = false
+        isMultiSelecting = false
+        batchSelection.clear()
+    }
+
+    /// Command-click enters multi mode; all subsequent row clicks only toggle selection.
+    func activateRow(_ clip: Clip) {
+        if isMultiSelecting || NSEvent.modifierFlags.contains(.command) {
+            guard canBatchSelect(clip) else { return }
+            if !isMultiSelecting { beginMultiSelection() }
+            toggleBatchClip(clip)
+        } else {
+            use(clip: clip)
+        }
+    }
+
+    func moveBatchItem(_ id: UUID, by offset: Int) { batchSelection.move(id, by: offset) }
+    func removeBatchItem(_ id: UUID) { batchSelection.remove(id) }
+
+    private func toggleBatchClip(_ clip: Clip) {
+        if batchSelection.ids.contains(clip.id) { batchSelection.remove(clip.id) }
+        else if let kind = batchKind(for: clip) { batchSelection.toggle(clip.id, kind: kind) }
+    }
+
+    func openBatchPreview() {
+        guard !batchSelection.ids.isEmpty else { return }
+        isBatchPreviewPresented = true
+    }
+
+    func closeBatchPreview() {
+        isBatchPreviewPresented = false
+        searchFocusRequest += 1
+    }
+
+    func copySelectedBatch() {
+        let selectedClips = batchClips
+        guard !selectedClips.isEmpty, selectedClips.count == batchSelection.ids.count else { return }
+        if isImageBatch {
+            do { try PasteboardWriter.write(images: selectedClips) }
+            catch PasteboardWriter.BatchImageError.missingOriginal(let position) {
+                showToast("第 \(position) 张原图已清理，请移除后重试")
+                return
+            } catch ImageBatchPasteboard.CopyError.invalidImage(let position) {
+                showToast("第 \(position) 张图片无法读取，请移除后重试")
+                return
+            } catch {
+                showToast("图片复制失败，请重试")
+                return
+            }
+        } else {
+            guard let text = mergedBatchText else { return }
+            guard PasteboardWriter.write(text: text) else {
+                showToast("复制失败，请重试")
+                return
+            }
+        }
+        selectedClips.forEach { store.markUsed(clip: $0) }
+        EventLog.track("batch_copy_used", ["count": String(selectedClips.count),
+            "kind": isImageBatch ? "image" : "text", "separator": isImageBatch ? "none" : copySeparator.rawValue])
+
+        let wantsAutoPaste = settings.pasteTarget == "app"
+        let authorized = wantsAutoPaste && AutoPaster.isAuthorized()
+        let canAutoPaste = authorized && AutoPaster.hasValidPasteTarget()
+        if wantsAutoPaste && !authorized {
+            settings.pasteTarget = "clipboard"
+            settings.accessibilityGranted = false
+        }
+        if authorized { settings.accessibilityGranted = true }
+        cancelMultiSelection()
+        PanelController.shared.hide()
+        if canAutoPaste {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(80))
+                guard !Task.isCancelled else { return }
+                if !AutoPaster.pasteToFocusedApp() {
+                    EventLog.track(EventLog.autoPasteDenied, ["kind": "batch", "reason": "send_failed"])
+                }
+            }
+        }
+    }
+
     /// 使用条目（点击行 / ⏎ / 模板点击共用）：按 pasteTarget 走「写剪贴板」或「直接粘贴到目标 App」
     /// - clipboard（默认，零权限）：写回剪贴板 → toast「已写入剪贴板」，面板保持展开（可连续取用多条）
     /// - app：需辅助功能授权；未授权自动回落 clipboard + toast；已授权写剪贴板 → 收面板 → 80ms 后向目标 App 发 ⌘V
     func use(clip: Clip) {
+        if isMultiSelecting {
+            guard canBatchSelect(clip) else { return }
+            toggleBatchClip(clip)
+            return
+        }
         let pasteTarget = settings.pasteTarget
         let eventName = clip.isTemplate ? EventLog.templateUsed : EventLog.itemUsed
         EventLog.track(eventName, ["kind": clip.kind, "paste_target": pasteTarget])
@@ -870,7 +1032,7 @@ final class PanelViewModel {
             try? await Task.sleep(for: .seconds(0.7))
             guard !Task.isCancelled else { return }
             guard moreMenuClip == nil, templateMenuClip == nil, browserChooserClip == nil,
-                  previewingClip == nil, activeDialog == nil, toast == nil else { return }
+                  previewingClip == nil, activeDialog == nil, !isBatchPreviewPresented, toast == nil else { return }
             overlayTeardownToken &+= 1
         }
     }
@@ -937,6 +1099,7 @@ final class PanelViewModel {
         if browserChooserClip != nil { flags += "B" }
         if previewingClip != nil { flags += "P" }
         if activeDialog != nil { flags += "D" }
+        if isBatchPreviewPresented { flags += "b" }
         if toast != nil { flags += "o" }
         if draggingTemplateId != nil { flags += "g" }
         return flags

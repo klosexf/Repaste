@@ -16,6 +16,33 @@ import Foundation
 /// - file：写 .fileURL 类型（NSURL(fileURLWithPath:)）
 /// 写完统一调用 ClipboardMonitor.markExternalWrite() 防止刚写回的条目再次入库置顶
 enum PasteboardWriter {
+    enum BatchImageError: Error { case missingOriginal(Int) }
+
+    static func write(images: [Clip]) throws {
+        let sources = try images.enumerated().map { index, clip in
+            guard clip.kindEnum == .image, let ref = clip.payloadRef,
+                  ImageStore.shared.hasOriginal(name: ref),
+                  let data = try? Data(contentsOf: ImageStore.shared.fileURL(name: ref)) else {
+                throw BatchImageError.missingOriginal(index + 1)
+            }
+            return ImageBatchPasteboard.Source(data: data, fileExtension: (ref as NSString).pathExtension)
+        }
+        try ImageBatchPasteboard.write(sources, to: .general,
+            cacheRoot: ImageStore.shared.copiedImagesRoot, ttlDays: SettingsStore.shared.imageTtlDays)
+        ClipboardMonitor.shared.markExternalWrite()
+    }
+
+    /// One merged plain-text payload, with the same self-recording suppression as a single item.
+    @discardableResult
+    static func write(text: String) -> Bool {
+        guard !text.isEmpty else { return false }
+        let pasteboard = NSPasteboard.general
+        pasteboard.prepareForNewContents()
+        let success = pasteboard.setString(text, forType: .string)
+        ClipboardMonitor.shared.markExternalWrite()
+        return success
+    }
+
     /// 写回条目（prepareForNewContents 清空旧类型后按类型写入）
     static func write(clip: Clip) {
         let pasteboard = NSPasteboard.general

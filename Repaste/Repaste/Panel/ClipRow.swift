@@ -71,6 +71,10 @@ struct ClipRow: View {
     let clip: Clip
     /// 是否键盘选中（surface3 高亮）
     let isSelected: Bool
+    var isMultiSelecting = false
+    var batchNumber: Int? = nil
+    var isBatchSelectable = true
+    var batchUnavailableReason = "不支持多选"
     /// 搜索关键词（命中片段高亮）
     let searchText: String
     /// 使用条目（点击整行）
@@ -112,6 +116,10 @@ struct ClipRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
+            if isMultiSelecting {
+                BatchSelectionBadge(number: batchNumber, isEnabled: isBatchSelectable)
+                    .padding(.top, 2)
+            }
             // 置顶标记（中性 muted：状态标记，不占用警示橙与类型色语义）
             if clip.pinned {
                 Image(systemName: "pin.fill")
@@ -131,6 +139,7 @@ struct ClipRow: View {
             if clip.kindEnum == .image {
                 thumbnailView
                     .padding(.top, 1)
+                    .allowsHitTesting(!isMultiSelecting)
             }
 
             // 内容区（三类形态）
@@ -138,8 +147,10 @@ struct ClipRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             // 右侧操作区（⋮ 按钮；链接打开已统一为元信息行内「打开链接」按钮）
-            moreButton
-                .padding(.top, 2)
+            if !isMultiSelecting {
+                moreButton
+                    .padding(.top, 2)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -147,8 +158,19 @@ struct ClipRow: View {
             RoundedRectangle(cornerRadius: DT.innerCardRadius, style: .continuous)
                 .fill(rowBackground)
         )
+        .overlay {
+            RoundedRectangle(cornerRadius: DT.innerCardRadius, style: .continuous)
+                .strokeBorder(batchNumber != nil ? DT.accent.opacity(0.6) : .clear, lineWidth: 1)
+        }
+        .opacity(isMultiSelecting && !isBatchSelectable ? 0.4 : 1)
         .contentShape(RoundedRectangle(cornerRadius: DT.innerCardRadius, style: .continuous))
         .onTapGesture(perform: onUse)
+        .accessibilityElement(children: isMultiSelecting ? .ignore : .contain)
+        .accessibilityLabel(clip.preview)
+        .accessibilityValue(isMultiSelecting ? (batchNumber.map { "已选，第 \($0) 项" } ?? (isBatchSelectable ? "未选中" : batchUnavailableReason)) : "")
+        .help(isMultiSelecting && !isBatchSelectable ? batchUnavailableReason : "")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onUse() }
         .onHover { isHovering = $0 }
         .onAppear(perform: loadImages)
     }
@@ -157,6 +179,7 @@ struct ClipRow: View {
 
     /// 选中 = surface3；hover = surface2；否则透明（无彩色竖线）
     private var rowBackground: Color {
+        if batchNumber != nil { return DT.accent.opacity(0.12) }
         if isSelected { return DT.surface3 }
         if isHovering { return DT.surface2 }
         return .clear
@@ -210,13 +233,14 @@ struct ClipRow: View {
     private func metaRow(extras: [String], showsOpenLink: Bool = false) -> some View {
         HStack(spacing: 7) {
             sourceLabel
+                .allowsHitTesting(!isMultiSelecting)
             dot
             Text(RelativeTime.string(from: clip.createdAt))
             ForEach(extras, id: \.self) { text in
                 dot
                 Text(text)
             }
-            if showsOpenLink {
+            if showsOpenLink && !isMultiSelecting {
                 dot
                 openLinkButton
             }
