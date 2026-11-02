@@ -50,6 +50,7 @@ shots2/
 psnr-tmp/
 psnr-tmp2/
 promo-shotcraft/
+outputs/
 
 # Trae IDE 配置
 .trae/
