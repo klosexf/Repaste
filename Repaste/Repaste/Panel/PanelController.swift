@@ -20,26 +20,11 @@ enum PanelMode {
 
 // MARK: - 面板进出动效参数
 
-/// 面板进出动效参数
-/// 入场 ease-out（先快后缓、柔和落位）；退场 ease-in（加速离场），时长约为入场 3/4
+/// 刘海连续形变；居中入口仍使用轻位移淡入。
 private enum PanelMotion {
-    /// 入场时长（notch 刘海垂落 / centered 自下方升起）
-    static let arriveDuration: TimeInterval = 0.18
-    /// 退场时长（离场快于入场）
-    static let departDuration: TimeInterval = 0.14
-    /// 收起动画中途重新展示的恢复时长
-    static let recoverDuration: TimeInterval = 0.18
-    /// 减弱动态效果（Reduce Motion）时的纯淡入 / 淡出时长
-    static let fadeInDuration: TimeInterval = 0.18
-    static let fadeOutDuration: TimeInterval = 0.14
-    /// notch 模式滑入 / 滑出时与屏幕顶的间距（完全藏到刘海后方）
-    static let notchGap: CGFloat = 10
-    /// centered 模式入场升起 / 退场下沉的位移
+    static let frameInterval: TimeInterval = 1.0 / 120.0
+    static let resizeDuration: TimeInterval = 0.15
     static let centeredOffset: CGFloat = 12
-    /// 入场曲线：expo ease-out
-    static let arriveTiming = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
-    /// 退场曲线：ease-in
-    static let departTiming = CAMediaTimingFunction(controlPoints: 0.7, 0, 0.84, 0)
 }
 
 // MARK: - 面板窗口
@@ -79,7 +64,7 @@ private final class RepastePanel: NSPanel {
 
 /// NSPanel 面板控制器（单例）
 /// 展示 / 隐藏均不激活 App；面板展示时 makeKey（不激活 App）确保键盘事件到达；
-/// 面板高度随内容自适应（最大约 560，且不超屏幕可用高度 - 120）
+/// 面板高度随内容自适应（最大约 450，且不超屏幕可用高度 - 120）
 final class PanelController {
     /// 单例
     static let shared = PanelController()
@@ -93,15 +78,24 @@ final class PanelController {
     /// SwiftUI 承载视图（用于计算内容自适应高度；死态自愈时整体重建，故为 var）
     private var hostingView: NSHostingView<PanelView>
 
+    private let transitionView: PanelTransitionView
+    private var transition = PanelTransition()
+    private var motionTimer: Timer?
+    private var lastMotionTime: TimeInterval = 0
+    private var expandedFrame = CGRect.zero
+    private var collapsedSize = CGSize(width: 96, height: 29)
+    private var resizeFrom: CGRect?
+    private var resizeTarget = CGRect.zero
+    private var resizeElapsed: TimeInterval = 0
+    private var pendingContentResize = false
+    private var allowsHoverRecovery = false
+    private var reduceMotion = false
+
     /// 当前展示模式（尺寸锚定计算用）
     private var currentMode: PanelMode = .notch
 
     /// 当前所在屏（多屏下面板在触发热区 / 胶囊的屏展示；内容高度重算时沿用）
     private weak var currentScreen: NSScreen?
-
-    /// 面板展示代次（每次 show 递增；hide 完成回调校验代次，
-    /// 防止渐隐期间被重新展示的面板被旧回调误 orderOut）
-    private var showGeneration = 0
 
     /// notch 模式面板顶部超出屏幕顶的距离（pt）：把窗口顶边与阴影抬到屏幕外，
     /// 既保留底部/两侧阴影的层次感，又避免顶边贴屏时窗口阴影合成出的细亮边
@@ -135,10 +129,12 @@ final class PanelController {
         panel.hidesOnDeactivate = false
 
         let hostingView = NSHostingView(rootView: PanelView(viewModel: viewModel))
-        panel.contentView = hostingView
+        let transitionView = PanelTransitionView(hosting: hostingView, contentWidth: DT.panelWidth, cornerRadius: DT.panelRadius)
+        panel.contentView = transitionView
 
         self.panel = panel
         self.hostingView = hostingView
+        self.transitionView = transitionView
 
         // 首次渲染即有数据（避免首次展示闪空态）
         viewModel.reload()
@@ -152,155 +148,155 @@ final class PanelController {
 
     // MARK: 展示 / 隐藏
 
-    /// 展示面板（入场过渡动画，不激活 App）
-    /// notch 模式：面板从屏幕顶上方（刘海后方）滑落展开 + 淡入；
-    /// centered 模式：自最终位置下方 12pt 升起 + 淡入；
-    /// 系统开启「减弱动态效果」时退化为纯淡入（不位移）
-    /// - Parameters:
-    ///   - mode: 展示模式（刘海 / 居中）
-    ///   - screen: 目标屏（nil = NSScreen.main；刘海热区 / 胶囊触发展开时传所在屏）
-    ///   - trigger: 埋点触发来源（nil 时按 mode 推断：notch → "notch"、centered → "hotkey"）
+    /// 刘海外壳从实际刘海 / 胶囊展开；内容保持完整尺寸，系统减弱动态效果时只淡入。
     func show(mode: PanelMode, on screen: NSScreen? = nil, trigger: String? = nil) {
         guard let screen = screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
-        // 展示代次递增：使渐隐期间挂起的旧 hide 完成回调失效（防止刚展示的面板被误移出）
-        showGeneration += 1
+        if panel.isVisible, currentMode == mode, currentScreen === screen,
+           reopenIfClosing() { return }
+
+        stopMotion()
         currentMode = mode
         currentScreen = screen
-        viewModel.isNotchMode = (mode == .notch)
-        // notch 模式面板顶部延伸到屏幕外（notchTopOverhang），头部行需下移
-        // 菜单栏 / 刘海高度 + 超出量，保证内容仍从菜单栏下沿开始
-        viewModel.notchTopInset = (mode == .notch)
-            ? (screen.frame.maxY - screen.visibleFrame.maxY) + Self.notchTopOverhang
-            : 0
-
-        // 恢复设置（tab / 来源筛选）、清空搜索、重置键盘选中、刷新数据快照
+        reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        viewModel.isNotchMode = mode == .notch
+        let overhang = topOverhang(on: screen)
+        viewModel.notchTopInset = mode == .notch
+            ? screen.frame.maxY - screen.visibleFrame.maxY + overhang : 0
         viewModel.prepareForDisplay()
         EventLog.track(EventLog.panelOpen, ["trigger": trigger ?? (mode == .notch ? "notch" : "hotkey")])
 
-        let finalFrame = computePanelFrame(screen: screen)
-
-        // 收起动画尚未结束又重新展示：从当前位置 / 当前透明度平滑恢复到目标位，避免跳变
-        if panel.isVisible && panel.alphaValue > 0.05 {
-            // 先完整摘除再挂回（forceRemount）：canJoinAllSpaces+stationary 面板可能进入
-            // 「可见但点击穿透」的失联态（WindowServer 仍合成绘制，事件命中区域却未挂载），
-            // 单纯 orderFrontRegardless 只调层级、不重建事件挂载，必须 orderOut + orderFront
-            // 强制重建；同 runloop 内无可见闪烁
-            forceRemount()
-            // 恢复路径同样重建 SwiftUI 树：手势图坏态若只靠「重新呼出」无法消除
-            // （面板未真正收起时用户反复呼出都走本路径），死态会跨多次呼出存活——
-            // 实测日志中出现过连续 3 次 panel_open 无效、第 4 次才恢复的序列
-            rebuildContentView()
-            let generation = showGeneration
-            NSAnimationContext.runAnimationGroup({ context in
-                context.duration = PanelMotion.recoverDuration
-                context.timingFunction = PanelMotion.arriveTiming
-                panel.animator().alphaValue = 1
-                panel.animator().setFrame(finalFrame, display: true)
-            }, completionHandler: { [weak self] in
-                // 恢复动画被后续动画打断时 alpha 的 model value 可能冻结在中途值，
-                // 仍是当前代次时强制终态，避免半透明残影影响后续路径判断
-                guard let self, generation == self.showGeneration, self.panel.isVisible else { return }
-                self.panel.alphaValue = 1
-            })
-            return
-        }
-
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-
-        // 入场起始 frame：notch 移到屏幕顶上方（完全藏于刘海后方）；centered 下移 12pt。
-        // notch 的滑入起点在目标屏顶边上方，多屏纵向错位排列时该区域可能落在另一屏可见区，
-        // 会在另一屏「闪一下」——此时退化为原地淡入（不位移）
-        var startFrame = finalFrame
-        if !reduceMotion {
-            switch mode {
-            case .notch:
-                if !notchSlideOverlapsOtherScreen(screen: screen, panelHeight: finalFrame.height) {
-                    startFrame.origin.y = screen.frame.maxY + PanelMotion.notchGap
-                }
-            case .centered:
-                startFrame.origin.y -= PanelMotion.centeredOffset
-            }
-        }
-
-        // 幽灵态防御：面板本应不可见却仍挂载（alpha 残留在低值的罕见态），先彻底移出保证干净入场
+        // 每次完整重开仍重建 SwiftUI 树，保留既有点击失联自愈；反向恢复不重建。
         if panel.isVisible { panel.orderOut(nil) }
-        // 治愈性重置：整体重建 SwiftUI 树。hostingView 若全程常驻复用，「收起动画期间
-        // 点击被打断」等序列会让 SwiftUI 手势图残留悬挂的按下/追踪态——之后所有点击
-        // 进入窗口却不再触发任何按钮（跨面板重开永久存在，orderOut/orderFront 无法恢复）。
-        // 视图 @State 均为轻量展示态（数据在 viewModel），重建无感且能清除一切累积坏态
         rebuildContentView()
-        panel.setFrame(startFrame, display: false)
-        panel.alphaValue = 0
-        // orderFrontRegardless 不激活 App；成为 key window（nonactivating 不激活 App）确保键盘事件到达
+        expandedFrame = computePanelFrame(screen: screen)
+        transitionView.contentSize = expandedFrame.size
+        transitionView.isNotch = mode == .notch
+        transitionView.isCapsule = mode == .notch && screen.safeAreaInsets.top == 0
+        collapsedSize = collapsedPanelSize(on: screen, overhang: overhang)
+        transition = PanelTransition()
+        resizeFrom = nil
+        pendingContentResize = false
+        allowsHoverRecovery = false
+        renderMotion()
+        if mode == .notch { CapsuleController.shared.handOffToPanel() }
         panel.orderFrontRegardless()
         panel.makeKey()
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = reduceMotion ? PanelMotion.fadeInDuration : PanelMotion.arriveDuration
-            context.timingFunction = PanelMotion.arriveTiming
-            panel.animator().alphaValue = 1
-            if !reduceMotion {
-                panel.animator().setFrame(finalFrame, display: true)
+        transition.setExpanded(true)
+        startMotion()
+    }
+
+    /// 自动离开收起允许鼠标在动画结束前接回；Esc / 选用条目等主动关闭不被悬停反转。
+    func hide(allowHoverRecovery: Bool = false) {
+        guard panel.isVisible, transition.isExpanded else { return }
+        allowsHoverRecovery = allowHoverRecovery
+        resizeFrom = nil
+        transition.setExpanded(false)
+        startMotion()
+    }
+
+    /// 快捷键连续按下时从当前外形和速度反向，不重新开一块面板。
+    @discardableResult
+    func reopenIfClosing() -> Bool {
+        guard panel.isVisible, !transition.isExpanded else { return false }
+        allowsHoverRecovery = false
+        transition.setExpanded(true)
+        panel.makeKey()
+        startMotion()
+        if currentMode == .notch { HotZoneWatcher.shared.resumeAutoHideTracking() }
+        return true
+    }
+
+    /// 只接回因鼠标离开而开始的关闭；命中实时外形，避免透明区域阻碍其他应用。
+    func recoverHover(at point: CGPoint) -> Bool {
+        guard allowsHoverRecovery, currentMode == .notch,
+              NSEvent.pressedMouseButtons == 0,
+              panelHitFrame(tolerance: 6).contains(point) else { return false }
+        return reopenIfClosing()
+    }
+
+    private func startMotion() {
+        guard motionTimer == nil else { return }
+        lastMotionTime = ProcessInfo.processInfo.systemUptime
+        let timer = Timer(timeInterval: PanelMotion.frameInterval, repeats: true) { [weak self] _ in
+            self?.advanceMotion()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        motionTimer = timer
+    }
+
+    private func stopMotion() {
+        motionTimer?.invalidate()
+        motionTimer = nil
+    }
+
+    private func advanceMotion() {
+        let now = ProcessInfo.processInfo.systemUptime
+        let elapsed = min(now - lastMotionTime, 0.064)
+        lastMotionTime = now
+        transition.advance(by: elapsed)
+        if let from = resizeFrom {
+            resizeElapsed += elapsed
+            let t = min(1, resizeElapsed / PanelMotion.resizeDuration)
+            let p = CGFloat(1 - pow(1 - t, 3))
+            expandedFrame = CGRect(x: from.minX + (resizeTarget.minX - from.minX) * p,
+                                   y: from.minY + (resizeTarget.minY - from.minY) * p,
+                                   width: from.width + (resizeTarget.width - from.width) * p,
+                                   height: from.height + (resizeTarget.height - from.height) * p)
+            if t == 1 { resizeFrom = nil }
+        }
+        renderMotion()
+        guard transition.isSettled, resizeFrom == nil else { return }
+        stopMotion()
+        if transition.isExpanded {
+            if pendingContentResize, let screen = currentScreen {
+                pendingContentResize = false
+                applyPanelFrame(screen: screen, animated: true)
+            }
+        } else {
+            panel.orderOut(nil)
+            allowsHoverRecovery = false
+            // 动画结束后才撤多选页脚 / 提交待删除内容，避免外壳收起中途跳高度。
+            viewModel.persistOnHide()
+            if currentMode == .notch, let screen = currentScreen {
+                CapsuleController.shared.restoreAfterPanel(on: screen)
             }
         }
     }
 
-    /// 隐藏面板（退场过渡动画后移出）
-    /// notch 模式：上滑缩回屏幕顶上方（刘海后方）+ 淡出；centered 模式：下沉 12pt + 淡出；
-    /// 系统开启「减弱动态效果」时退化为纯淡出（不位移）
-    func hide() {
-        // 持久化来源筛选（rememberAppFilter 开启时保存 lastSourceFilter）
-        viewModel.persistOnHide()
-        let panel = self.panel
-        guard panel.isVisible else { return }
-
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-
-        // 退场目标 frame：notch 上滑至屏幕顶上方（完全藏于刘海后方）；centered 下沉 12pt。
-        // notch 的滑出终点在目标屏顶边上方，多屏纵向错位排列时会在另一屏「闪一下」，
-        // 此时原地淡出（不位移）
-        let endFrame: NSRect
+    private func renderMotion() {
+        let p = min(1, max(0, transition.progress))
+        let frame: CGRect
         if reduceMotion {
-            endFrame = panel.frame
+            frame = expandedFrame
+        } else if currentMode == .notch {
+            frame = transition.notchFrame(expanded: expandedFrame, collapsedSize: collapsedSize)
         } else {
-            switch currentMode {
-            case .notch:
-                if let screen = currentScreen ?? NSScreen.main ?? NSScreen.screens.first,
-                   !notchSlideOverlapsOtherScreen(screen: screen, panelHeight: panel.frame.height) {
-                    endFrame = CGRect(
-                        x: panel.frame.minX,
-                        y: screen.frame.maxY + PanelMotion.notchGap,
-                        width: panel.frame.width,
-                        height: panel.frame.height
-                    )
-                } else {
-                    endFrame = panel.frame
-                }
-            case .centered:
-                endFrame = panel.frame.offsetBy(dx: 0, dy: -PanelMotion.centeredOffset)
-            }
+            frame = expandedFrame.offsetBy(dx: 0, dy: -PanelMotion.centeredOffset * (1 - p))
         }
+        // 窗口只占当前可见外壳，透明区不会吞掉桌面点击；内部 SwiftUI 不跟着 resize。
+        panel.setFrame(frame, display: false)
+        transitionView.progress = reduceMotion ? 1 : p
+        transitionView.updateGeometry()
+        panel.alphaValue = reduceMotion || currentMode == .centered ? p : 1
+        panel.invalidateShadow()
+    }
 
-        // 记录当前代次：完成回调时校验，渐隐期间若发生重新展示（代次已变）则不移出
-        let generation = showGeneration
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = reduceMotion ? PanelMotion.fadeOutDuration : PanelMotion.departDuration
-            context.timingFunction = PanelMotion.departTiming
-            panel.animator().alphaValue = 0
-            panel.animator().setFrame(endFrame, display: true)
-        }, completionHandler: { [weak self] in
-            guard let self, generation == self.showGeneration else { return }
-            // 若动画期间面板被重新展示（alpha 回升），则不移出
-            if self.panel.alphaValue < 0.05 {
-                self.panel.orderOut(nil)
-            } else if self.panel.isVisible {
-                // 防御：渐隐动画被同名动画叠加后 alpha 的 model value 可能冻结在中间值
-                // （多处并发触发两次 hide 时），无新展示代次时面板必须彻底移出——
-                // 半透明残影挂在屏上会让后续 show() 误走「恢复路径」跳过事件挂载重建，
-                // 形成可见但不可点击的死态
-                self.panel.alphaValue = 0
-                self.panel.orderOut(nil)
-            }
-        })
+    private func collapsedPanelSize(on screen: NSScreen, overhang: CGFloat) -> CGSize {
+        if screen.safeAreaInsets.top > 0,
+           let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+            let width = min(DT.panelWidth, max(96, right.minX - left.maxX))
+            return CGSize(width: width, height: screen.safeAreaInsets.top + overhang)
+        }
+        return CGSize(width: 96, height: 5 + overhang)
+    }
+
+    /// 上方有另一屏时不把 24pt 黑色外壳画到相邻屏上。
+    private func topOverhang(on screen: NSScreen) -> CGFloat {
+        guard currentMode == .notch else { return 0 }
+        let strip = CGRect(x: screen.frame.midX - DT.panelWidth / 2, y: screen.frame.maxY,
+                           width: DT.panelWidth, height: Self.notchTopOverhang)
+        return NSScreen.screens.contains { $0 !== screen && $0.frame.intersects(strip) }
+            ? 0 : Self.notchTopOverhang
     }
 
     // MARK: 尺寸与位置
@@ -325,7 +321,7 @@ final class PanelController {
             // 窗口顶边与阴影在屏外不可见，可见顶边为纯黑内容，底部/两侧阴影保留层次感
             origin = CGPoint(
                 x: screen.frame.midX - size.width / 2,
-                y: screen.frame.maxY - size.height + Self.notchTopOverhang
+                y: screen.frame.maxY - size.height + topOverhang(on: screen)
             )
         case .centered:
             // 屏幕水平垂直居中
@@ -338,34 +334,23 @@ final class PanelController {
         return NSRect(origin: origin, size: size)
     }
 
-    /// notch 滑入 / 滑出带是否落入其他屏幕可见区（多屏纵向错位排列时会在另一屏「闪一下」）。
-    /// 滑出带 = 目标屏顶边上方、面板水平居中、高度覆盖「藏入刘海后方 notchGap + 面板高」的矩形；
-    /// 任一其他屏 frame 与该带相交，说明面板顶边上方区域在那块屏上可见，滑动会被看见
-    private func notchSlideOverlapsOtherScreen(screen: NSScreen, panelHeight: CGFloat) -> Bool {
-        let band = CGRect(
-            x: screen.frame.midX - DT.panelWidth / 2,
-            y: screen.frame.maxY,
-            width: DT.panelWidth,
-            height: PanelMotion.notchGap + panelHeight
-        )
-        for other in NSScreen.screens where other !== screen {
-            if other.frame.intersects(band) { return true }
-        }
-        return false
-    }
-
-    /// 按内容自适应高度重算并应用面板 frame
-    /// - Parameter animated: 内容变化期间是否带动画过渡（notch 顶边锚定、centered 中心锚定）
+    /// 内容尺寸变化与进出共用同一个驱动，避免两条动画同时争用窗口 frame。
     private func applyPanelFrame(screen: NSScreen, animated: Bool = false) {
+        guard transition.isExpanded, transition.isSettled else {
+            pendingContentResize = true
+            return
+        }
         let newFrame = computePanelFrame(screen: screen)
-        if animated {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.15
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                panel.animator().setFrame(newFrame, display: true)
-            }
+        guard newFrame != expandedFrame else { return }
+        transitionView.contentSize = newFrame.size
+        if animated && !reduceMotion {
+            resizeFrom = expandedFrame
+            resizeTarget = newFrame
+            resizeElapsed = 0
+            startMotion()
         } else {
-            panel.setFrame(newFrame, display: false)
+            expandedFrame = newFrame
+            renderMotion()
         }
     }
 
@@ -377,15 +362,17 @@ final class PanelController {
         // 显式继承旧视图布局：赋 contentView 时 AppKit 通常会接管 frame，
         // 但窗口此刻的 content 布局可能与旧视图 frame 有偏差，显式设置兜底
         hosting.frame = hostingView.frame
-        hosting.autoresizingMask = [.width, .height]
-        panel.contentView = hosting
         hostingView = hosting
+        transitionView.replaceHosting(hosting)
     }
 
     // MARK: 悬停收起支持（HotZoneWatcher / CapsuleController / HotKeyManager 使用）
 
     /// 面板当前是否可见（含渐隐动画期间，orderOut 前均为 true）
     var isPanelVisible: Bool { panel.isVisible }
+
+    /// 展开意图，与关闭动画尚可见的状态分开，供快捷键反向使用。
+    var isPanelExpanded: Bool { panel.isVisible && transition.isExpanded }
 
     /// 面板命中区域（全局 AppKit 坐标，四周外扩 tolerance；悬停收起检测用）
     func panelHitFrame(tolerance: CGFloat) -> CGRect {
@@ -502,7 +489,8 @@ final class PanelController {
     /// 判定点击是否穿透了可见面板，是则强制重建（节流 0.5s）
     private func healIfClickThrough(_ event: NSEvent) {
         let panel = self.panel
-        guard panel.isVisible, panel.alphaValue > 0.5 else { return }
+        guard panel.isVisible, transition.isExpanded, transition.isSettled,
+              panel.alphaValue > 0.5 else { return }
         let location = NSEvent.mouseLocation
         guard panel.frame.contains(location) else { return }
         // 排除屏幕顶部菜单栏 / 刘海带（notch 模式面板 frame 覆盖该区域，但该区域

@@ -155,9 +155,9 @@ final class HotKeyManager {
 
     /// 面板已开 → 收起；未开 → 居中展开（埋点 trigger: hotkey，任意前台 App 均可呼出）
     private func togglePanel() {
-        if PanelController.shared.isPanelVisible {
+        if PanelController.shared.isPanelExpanded {
             PanelController.shared.hide()
-        } else {
+        } else if !PanelController.shared.reopenIfClosing() {
             PanelController.shared.show(mode: .centered, trigger: "hotkey")
         }
     }

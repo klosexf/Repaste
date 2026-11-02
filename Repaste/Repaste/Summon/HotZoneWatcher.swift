@@ -255,6 +255,10 @@ final class HotZoneWatcher: NSObject {
 
     /// 收起态判定进入待定：热区命中 + 面板未展开 + 无冷却 + 无抑制
     private func evaluateEntry(at location: NSPoint) {
+        if !isAnyButtonPressed, PanelController.shared.recoverHover(at: location) {
+            resumeAutoHideTracking()
+            return
+        }
         // 面板已展开（热区 / 快捷键 / 胶囊任一入口）不重复触发
         guard !PanelController.shared.isPanelVisible else { return }
         guard let zone = hotZone(at: location) else { return }
@@ -307,6 +311,12 @@ final class HotZoneWatcher: NSObject {
     func beginAutoHideTracking() {
         outsideSince = nil
         startPollTimer()
+    }
+
+    /// 收起尚未完成时鼠标返回：取消本轮冷却并接回同一个面板。
+    func resumeAutoHideTracking() {
+        cooldownUntil = nil
+        beginAutoHideTracking()
     }
 
     /// 冷却是否生效中（胶囊显示前询问，避免面板刚收起立即又被胶囊顶起）
@@ -391,7 +401,7 @@ final class HotZoneWatcher: NSObject {
         let leaveDelay = Double(leaveDelayMillis) / 1000.0
         if now.timeIntervalSince(outsideSince!) >= leaveDelay {
             stopPollTimer()
-            PanelController.shared.hide()
+            PanelController.shared.hide(allowHoverRecovery: true)
             enterCooldown()
         }
     }

@@ -208,6 +208,10 @@ final class CapsuleController: NSObject {
             dismiss()
             return
         }
+        if PanelController.shared.recoverHover(at: location) {
+            HotZoneWatcher.shared.resumeAutoHideTracking()
+            return
+        }
         // 面板已展开（热区 / 快捷键 / 胶囊任一入口）：胶囊隐藏，避免与面板叠压
         if PanelController.shared.isPanelVisible {
             dismiss()
@@ -215,7 +219,12 @@ final class CapsuleController: NSObject {
         }
         // 面板收起冷却内不显示（刚收起防胶囊立即又顶起，冷却时长与刘海状态机同档位）
         if HotZoneWatcher.shared.cooldownActive {
-            dismiss()
+            cancelHover()
+            if isNearTop(location, screen: screen) {
+                showCapsule(on: screen)
+            } else {
+                hideCapsule()
+            }
             return
         }
         // 悬停胶囊上 → 80ms 计时展开
@@ -260,6 +269,22 @@ final class CapsuleController: NSObject {
     }
 
     // MARK: 显示 / 隐藏
+
+    /// 交接给同一位置的可变形外壳，不再让独立胶囊在面板上叠着淡出。
+    func handOffToPanel() {
+        cancelHover()
+        panel.orderOut(nil)
+        panel.alphaValue = 0
+        isFadingOut = false
+        currentScreen = nil
+    }
+
+    func restoreAfterPanel(on screen: NSScreen) {
+        guard settings.hoverEnabled, screen.safeAreaInsets.top == 0,
+              NSEvent.pressedMouseButtons == 0,
+              isNearTop(NSEvent.mouseLocation, screen: screen) else { return }
+        showCapsule(on: screen)
+    }
 
     /// 渐显胶囊（0.15s），定位在该屏顶部居中
     private func showCapsule(on screen: NSScreen) {
@@ -333,7 +358,6 @@ final class CapsuleController: NSObject {
             return
         }
         guard let screen = currentScreen ?? screen(containing: NSEvent.mouseLocation) else { return }
-        hideCapsule()
         PanelController.shared.show(mode: .notch, on: screen)
         HotZoneWatcher.shared.beginAutoHideTracking()
     }

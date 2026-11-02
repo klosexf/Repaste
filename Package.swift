@@ -21,5 +21,12 @@ let package = Package(
             sources: ["ImageBatchPasteboard.swift"]
         ),
         .testTarget(name: "RepastePasteboardTests", dependencies: ["RepastePasteboard"]),
+        .target(
+            name: "RepasteMotion",
+            path: "Repaste/Repaste/Panel",
+            exclude: ["PanelController.swift", "PanelView.swift", "PanelViewModel.swift", "PanelDialogs.swift", "ImagePreviewOverlay.swift", "BrowserChooserMenu.swift", "MultiCopyViews.swift", "TemplateRow.swift", "ClipRow.swift", "ClipMoreMenu.swift"],
+            sources: ["PanelTransition.swift", "PanelTransitionView.swift"]
+        ),
+        .testTarget(name: "RepasteMotionTests", dependencies: ["RepasteMotion"]),
     ]
 )
